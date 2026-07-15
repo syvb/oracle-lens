@@ -106,7 +106,10 @@ def train_reconstructor(
         model, optimizer, loader, scheduler
     )
     metrics = MetricsLogger(
-        run.reconstructor_dir / "metrics.jsonl", enabled=accelerator.is_main_process
+        run.reconstructor_dir / "metrics.jsonl",
+        enabled=accelerator.is_main_process,
+        wandb_run_name=f"{cfg.run_name}-recon-train",
+        config=cfg,
     )
     if accelerator.is_main_process:
         print(f"recon-train: {len(pairs)} pairs, {total_steps} optim steps")
@@ -158,4 +161,5 @@ def train_reconstructor(
         tokenizer.save_pretrained(out_dir)
         save_recon_meta(out_dir, cfg, run.whitening)
         print(f"reconstructor -> {out_dir}")
+    metrics.finish()
     return out_dir

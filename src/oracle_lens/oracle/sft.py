@@ -142,7 +142,12 @@ def train_oracle_sft(
     register_injection_hook(accelerator.unwrap_model(model), meta, state)
 
     metrics = MetricsLogger(
-        (out_dir.parent / "metrics.jsonl"), enabled=accelerator.is_main_process
+        (out_dir.parent / "metrics.jsonl"),
+        enabled=accelerator.is_main_process,
+        wandb_run_name=f"{cfg.run_name}-{out_dir.parent.name}-{out_dir.name}"
+        if out_dir.name != "checkpoint"
+        else f"{cfg.run_name}-oracle-sft",
+        config=cfg,
     )
     if accelerator.is_main_process:
         print(
@@ -213,6 +218,7 @@ def train_oracle_sft(
             )
         )
         print(f"oracle SFT -> {out_dir} (holdout CE {final_ce:.4f})")
+    metrics.finish()
     return out_dir
 
 

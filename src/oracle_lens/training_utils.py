@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import random
 import time
 from pathlib import Path
@@ -45,13 +46,47 @@ def make_optimizer(model: torch.nn.Module, lr: float, head_lr_mult: float = 1.0)
 
 
 class MetricsLogger:
-    """Append-only metrics.jsonl per run — the plan's no-wandb choice."""
+    """Append-only metrics.jsonl per run, mirrored to wandb when configured.
 
-    def __init__(self, path: Path, enabled: bool = True) -> None:
+    wandb activates when a run name is given AND WANDB_API_KEY is set (export
+    it from ~/.wandb_key on the box; never pass it in argv). Project/entity
+    come from WANDB_PROJECT / WANDB_ENTITY, defaulting to oracle-lens /
+    octahedral-systems. Local JSONL is always written regardless, so runs
+    remain inspectable without network.
+    """
+
+    def __init__(
+        self,
+        path: Path,
+        enabled: bool = True,
+        *,
+        wandb_run_name: str | None = None,
+        config: Any = None,
+    ) -> None:
         self.path = path
         self.enabled = enabled
+        self._wandb = None
         if enabled:
             path.parent.mkdir(parents=True, exist_ok=True)
+        if enabled and wandb_run_name:
+            if os.environ.get("WANDB_API_KEY"):
+                from dataclasses import asdict, is_dataclass
+
+                import wandb
+
+                self._wandb = wandb.init(
+                    project=os.environ.get("WANDB_PROJECT", "oracle-lens"),
+                    entity=os.environ.get("WANDB_ENTITY", "octahedral-systems"),
+                    name=wandb_run_name,
+                    config=asdict(config) if is_dataclass(config) else config,
+                )
+            else:
+                print(
+                    "WARNING: WANDB_API_KEY not set — training run is NOT "
+                    "tracked in wandb (ENV.md requires tracking on GPU boxes; "
+                    "export WANDB_API_KEY=$(cat ~/.wandb_key) before launch)",
+                    flush=True,
+                )
 
     def log(self, **fields: Any) -> None:
         if not self.enabled:
@@ -59,3 +94,12 @@ class MetricsLogger:
         fields.setdefault("t", time.time())
         with self.path.open("a") as f:
             f.write(json.dumps(fields) + "\n")
+        if self._wandb is not None:
+            step = fields.get("step")
+            self._wandb.log(
+                {k: v for k, v in fields.items() if k not in ("t", "step")}, step=step
+            )
+
+    def finish(self) -> None:
+        if self._wandb is not None:
+            self._wandb.finish()
