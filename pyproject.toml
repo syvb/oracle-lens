@@ -1,0 +1,56 @@
+[project]
+name = "oracle-lens"
+version = "0.1.0"
+description = "Oracle lens for Qwen3-8B: free-form phrase decompositions of residual-stream activations (see PLAN.md)"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+    "torch>=2.6",
+    "transformers>=5.5",
+    "numpy>=1.26",
+    "safetensors",
+    "pyyaml",
+    "datasets>=2.19",
+    "pyarrow>=15",
+    "accelerate>=1.0",
+    "httpx",
+    "orjson",
+    "nla",
+    "jlens",
+]
+
+# vLLM (stage-0 generation) is intentionally NOT a locked dependency: it pins
+# its own CUDA torch and would fight the CPU lock used on dev boxes. On the GPU
+# node: `uv pip install vllm` into the synced venv (it may upgrade torch to a
+# CUDA build; that is fine there). See README "GPU node setup".
+
+[dependency-groups]
+dev = ["pytest", "scipy", "ruff"]
+
+[project.scripts]
+oracle-lens = "oracle_lens.cli:main"
+
+[tool.uv.sources]
+nla = { path = "third_party/natural_language_autoencoders", editable = true }
+jlens = { path = "third_party/jacobian-lens", editable = true }
+# Dev boxes are CPU-only; the GPU node overrides torch via vLLM install (above).
+torch = { index = "pytorch-cpu" }
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = ["third_party"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
