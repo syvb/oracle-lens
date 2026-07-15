@@ -59,3 +59,16 @@ def nnls_batched(
 def reconstruct(atoms: torch.Tensor, coeffs: torch.Tensor) -> torch.Tensor:
     """[B, K, d], [B, K] -> [B, d]."""
     return (coeffs.unsqueeze(1) @ atoms.to(coeffs.dtype)).squeeze(1)
+
+
+def nnls_refit_fve(
+    atoms: torch.Tensor, targets_w: torch.Tensor, **nnls_kwargs
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """The standard decode path [paper]: NNLS-refit coefficients of the given
+    (whitened, unit-norm) atoms against whitened targets, return
+    (coeffs [B, K], whitened FVE [B]). Shared by oracle decode and every
+    §8.1 baseline so the metric can't fork."""
+    from oracle_lens.eval.fve import fve_per_example
+
+    coeffs = nnls_batched(atoms, targets_w, **nnls_kwargs)
+    return coeffs, fve_per_example(targets_w, reconstruct(atoms, coeffs))

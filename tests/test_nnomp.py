@@ -68,7 +68,6 @@ def test_respects_half_dictionary_mask():
 
 
 def test_min_gain_stops_early_and_orthogonal_target_selects_nothing():
-    g = torch.Generator().manual_seed(3)
     dic = torch.eye(8)[:4]  # atoms span dims 0-3 only
     target = torch.zeros(1, 8)
     target[0, 7] = 1.0  # orthogonal to every atom

@@ -1,0 +1,27 @@
+# Oracle lens for Qwen3-8B — canonical run config (PLAN.md).
+# Values omitted here fall back to the dataclass defaults in
+# src/oracle_lens/config.py, which encode the plan's [paper]/[choice] knobs.
+# This file states the ones you're most likely to touch.
+
+run_name: qwen3-8b-v1
+
+model:
+  name: Qwen/Qwen3-8B
+  layer_index: 24        # l* — confirm with `oracle-lens layer-check` before M2
+  d_model: 4096          # verified against config.json at collection time
+  enable_thinking: false
+
+generation:
+  n_conversations: 100000
+  temperature: 0.7       # Qwen3 non-thinking recommended — verify vs model card
+  top_p: 0.8
+  max_new_tokens: 600
+
+whitening:
+  ridge_frac: 0.01       # sweep one order each way if teacher FVE is bad (§10.4)
+
+teacher:
+  gate_min_fve: 0.15     # M3 gate
+
+oracle:
+  alpha: null            # null = sqrt(d_model); set after `oracle-lens alpha-sweep`

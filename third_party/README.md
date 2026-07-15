@@ -24,3 +24,14 @@ Notes:
   shipped in that tree.
 - From `jlens` we use `fit`/`apply`/`transport`/`unembed` (layer check + eval
   baseline) and the slice visualizer.
+- Version caveat: `nla` was written against transformers 4.x
+  (`apply_chat_template` returning a list); this repo's env uses
+  transformers >=5.5 (jlens floor), where `nla.schema.compute_canonical_neighbors`
+  and the Miles-bound rollout path would misbehave. The pure modules we import
+  are unaffected; `oracle_lens.oracle.prompts` computes marker neighbors
+  itself. The M5 RL stack runs in its own env per the vendored docs/setup.md,
+  where nla's own pins apply.
+- Allowed vendored-tree mutation (upstream's own design): `find_injection_token`
+  caches the picked marker per tokenizer in
+  `natural_language_autoencoders/nla/datagen/injection_token_cache.yaml` —
+  commit that file's changes when they appear. Tests point the cache elsewhere.

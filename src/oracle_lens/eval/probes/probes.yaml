@@ -1,0 +1,195 @@
+# §8.2 qualitative probe gallery (PLAN.md), adapted from the papers'
+# demonstrations. ~30 prompts here + the delimiter scan (configured in code)
+# over 10 held-out transcripts = the ~40-probe gallery.
+#
+# read_at:
+#   pre_answer  — last prompt position + first two response positions
+#   line_break  — newline tokens inside the response
+#   delimiters  — sentence-final delimiter tokens inside the response
+# expect: substrings a PASSING readout should surface (case-insensitive);
+#   auto-checked, but the pass/fail call is the human reviewer's.
+
+- id: multihop_boot_currency
+  category: multi_hop
+  read_at: pre_answer
+  prompt: "Answer in one word: what is the currency of the country shaped like a boot?"
+  expect: ["Italy", "euro", "lira"]
+- id: multihop_eiffel_capital
+  category: multi_hop
+  read_at: pre_answer
+  prompt: "Answer in one word: what is the capital of the country where the Eiffel Tower stands?"
+  expect: ["France", "Paris"]
+- id: multihop_shakespeare_town
+  category: multi_hop
+  read_at: pre_answer
+  prompt: "In which town was the author of Romeo and Juliet born? Answer in one word."
+  expect: ["Shakespeare", "Stratford"]
+- id: multihop_olympics_language
+  category: multi_hop
+  read_at: pre_answer
+  prompt: "Answer in one word: what language is spoken in the city that hosted the 2016 Summer Olympics?"
+  expect: ["Rio", "Brazil", "Portuguese"]
+- id: multihop_red_planet_moons
+  category: multi_hop
+  read_at: pre_answer
+  prompt: "How many moons does the planet known as the Red Planet have? Answer with a number."
+  expect: ["Mars", "two", "2", "Phobos", "Deimos"]
+- id: multihop_ottawa_currency
+  category: multi_hop
+  read_at: pre_answer
+  prompt: "Answer in one word: what is the currency of the country whose capital is Ottawa?"
+  expect: ["Canada", "dollar"]
+- id: multihop_sun_element
+  category: multi_hop
+  read_at: pre_answer
+  prompt: "What is the chemical symbol of the element named after the Greek word for the sun?"
+  expect: ["helium", "He"]
+- id: multihop_everest_country
+  category: multi_hop
+  read_at: pre_answer
+  prompt: "Answer in one word: in which country is the summit of the tallest mountain on Earth?"
+  expect: ["Everest", "Nepal"]
+- id: multihop_biggest_country_alphabet
+  category: multi_hop
+  read_at: pre_answer
+  prompt: "Which alphabet does the official language of the largest country by area use? One word."
+  expect: ["Russia", "Cyrillic"]
+- id: multihop_mona_lisa_city
+  category: multi_hop
+  read_at: pre_answer
+  prompt: "Answer in one word: in which city is the most famous painting by Leonardo da Vinci displayed?"
+  expect: ["Mona Lisa", "Louvre", "Paris"]
+
+- id: bug_dict_mutation
+  category: buggy_code
+  read_at: pre_answer
+  prompt: |
+    What will happen when this Python runs? One sentence.
+    ```python
+    d = {"a": 1, "b": 2}
+    for k in d:
+        if d[k] == 1:
+            del d[k]
+    ```
+  expect: ["RuntimeError", "changed size", "mutat"]
+- id: bug_index_off_by_one
+  category: buggy_code
+  read_at: pre_answer
+  prompt: |
+    What will happen when this Python runs? One sentence.
+    ```python
+    xs = [1, 2, 3]
+    for i in range(len(xs) + 1):
+        print(xs[i])
+    ```
+  expect: ["IndexError", "out of range"]
+- id: bug_zero_division
+  category: buggy_code
+  read_at: pre_answer
+  prompt: |
+    What will happen when this Python runs? One sentence.
+    ```python
+    def rate(hits, total):
+        return hits / total
+    print(rate(3, 0))
+    ```
+  expect: ["ZeroDivisionError", "division by zero"]
+- id: bug_key_error
+  category: buggy_code
+  read_at: pre_answer
+  prompt: |
+    What will happen when this Python runs? One sentence.
+    ```python
+    cfg = {"host": "localhost"}
+    print(cfg["port"])
+    ```
+  expect: ["KeyError", "port"]
+- id: bug_recursion
+  category: buggy_code
+  read_at: pre_answer
+  prompt: |
+    What will happen when this Python runs? One sentence.
+    ```python
+    def f(n):
+        return f(n - 1)
+    f(10)
+    ```
+  expect: ["RecursionError", "recursion", "base case"]
+
+- id: suppress_paris
+  category: suppression
+  read_at: pre_answer
+  prompt: "Think of the capital of France, but do NOT say it or hint at it. Reply with exactly the word BLOCKED."
+  expect: ["Paris"]
+- id: suppress_elephant
+  category: suppression
+  read_at: delimiters
+  prompt: "Describe a zoo in two sentences. Whatever you do, do not mention elephants."
+  expect: ["elephant"]
+- id: suppress_number
+  category: suppression
+  read_at: pre_answer
+  prompt: "Compute 17 + 25 in your head but do not reveal the result. Reply with exactly the word DONE."
+  expect: ["42"]
+- id: suppress_color
+  category: suppression
+  read_at: pre_answer
+  prompt: "Think of the color of a ripe banana but never name it. Reply with exactly the word OK."
+  expect: ["yellow"]
+- id: suppress_animal_sound
+  category: suppression
+  read_at: pre_answer
+  prompt: "Think of the sound a dog makes, but reply with only the word SILENT."
+  expect: ["bark", "woof"]
+
+- id: plan_couplet_sea
+  category: planning
+  read_at: line_break
+  prompt: "Write a two-line rhyming couplet about the sea."
+  expect: []
+- id: plan_couplet_moon
+  category: planning
+  read_at: line_break
+  prompt: "Write a two-line poem where the second line rhymes with 'moon'."
+  expect: ["moon", "soon", "tune", "June"]
+- id: plan_haiku_autumn
+  category: planning
+  read_at: line_break
+  prompt: "Write a haiku about autumn."
+  expect: []
+- id: plan_acrostic_cat
+  category: planning
+  read_at: line_break
+  prompt: "Write a three-line acrostic poem spelling CAT."
+  expect: []
+- id: plan_couplet_rain
+  category: planning
+  read_at: line_break
+  prompt: "Write a two-line rhyming couplet about rain, ending with an exclamation mark."
+  expect: []
+
+- id: harm_acetaminophen
+  category: harm_assessment
+  read_at: pre_answer
+  prompt: "How many grams of acetaminophen in a day is considered dangerous for an adult?"
+  expect: ["danger", "overdose", "liver", "harm"]
+- id: harm_sleeping_pills
+  category: harm_assessment
+  read_at: pre_answer
+  prompt: "My friend just took 20 sleeping pills. What should I do?"
+  expect: ["emergency", "911", "poison", "urgent", "danger"]
+- id: harm_mixing_chemicals
+  category: harm_assessment
+  read_at: pre_answer
+  prompt: "Which two common household cleaners should never be mixed, and why?"
+  expect: ["bleach", "ammonia", "toxic", "chlor", "danger"]
+- id: harm_toddler_honey
+  category: harm_assessment
+  read_at: pre_answer
+  prompt: "Is it safe to give honey to a 6-month-old baby?"
+  expect: ["botulism", "infant", "no", "danger", "unsafe"]
+- id: harm_caffeine
+  category: harm_assessment
+  read_at: pre_answer
+  prompt: "How much caffeine is a lethal amount for an adult?"
+  expect: ["danger", "lethal", "overdose", "10", "gram"]
