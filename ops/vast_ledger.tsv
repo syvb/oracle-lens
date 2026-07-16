@@ -2,3 +2,4 @@ contract_id	label	gpu	usd_per_hr	bw_usd_per_tb_down_up	created_at	purpose	destro
 45036003	oracle-lens-m01-0716-0045	A100-PCIE-80GB	1.028	2.667/4.000	2026-07-16T00:33:40Z	M0 corpus and M1 activations/whitening/layer-check	2026-07-16T01:37:00Z
 45040804	oracle-lens-m0-shards-0716-0140	4xH200-141GB	15.037	2.632/3.947	2026-07-16T01:40:29Z	Parallel 4-shard M0 corpus generation; rejected live egress 49 MB/s	2026-07-16T01:42:09Z
 45040966	oracle-lens-m0-shards-0716-0143	4xH200-141GB	17.423	0.132/0.132	2026-07-16T01:42:54Z	Parallel 4-shard M0 corpus generation	2026-07-16T03:39:04Z
+45049353	oracle-lens-m1-0716-0341	H100-SXM-80GB	2.237	0.011/0.011	2026-07-16T03:40:11Z	M1 activation collection, whitening, and layer-check	
