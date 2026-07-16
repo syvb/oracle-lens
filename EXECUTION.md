@@ -54,8 +54,12 @@ GPU classes (shop per stage, §2): **[infer]** = any ≥48 GB Ampere-or-newer
 inference box; **[cheap-infer]** = ≥24 GB Ampere (3090/4090/A5000);
 **[train-8B]** = full 8B fine-tune: 1×141 GB (H200), or 2–4×80 GB (H100/A100
 SXM) with the FSDP config; **[train-6B]** = the truncated reconstructor
-(~5.9 B params): 1×H200 comfortable, 1×H100-80GB tight-but-OK
-(bump `--device-batch-size` down if OOM).
+(~5.45 B params): 1×H200 required single-card (fp32 master weights + AdamW
+≈ 87 GB of states — an 80 GB card no longer fits; use 2×80 GB FSDP otherwise).
+Trainers deliberately hold fp32 masters (bf16 masters + lr 1e-5 round most
+updates to zero — the M2 v1 bug); the same math makes [train-8B] ≈ 131 GB of
+states: a single H200 is tight (device-batch small, checkpointing on) — if it
+OOMs, go 2×H200 or 2-4×80 GB FSDP.
 
 | # | Commands | Box | Est. GPU time | Est. cost | Artifact → HF | Gate |
 |---|---|---|---|---|---|---|

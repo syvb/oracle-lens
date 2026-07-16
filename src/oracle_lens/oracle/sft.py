@@ -63,12 +63,12 @@ def _batch_vectors(store, whitening, rows, alpha, device, dtype):
 
 
 @torch.no_grad()
-def _holdout_ce(model, batches, store, whitening, alpha, state, device) -> float:
+def _holdout_ce(model, batches, store, whitening, alpha, state, device, dtype) -> float:
     model.eval()
     losses = []
     for batch in batches:
         state.vectors = _batch_vectors(
-            store, whitening, batch["store_rows"], alpha, device, torch.bfloat16
+            store, whitening, batch["store_rows"], alpha, device, dtype
         )
         out = model(
             input_ids=batch["input_ids"].to(device),
@@ -128,8 +128,12 @@ def train_oracle_sft(
         )
     )
 
-    model = AutoModelForCausalLM.from_pretrained(cfg.model.name, torch_dtype=torch.bfloat16)
+    # fp32 master weights (see reconstructor/train.py): bf16 masters + AdamW
+    # at lr ~1e-5 round most backbone updates to zero. Autocast handles bf16
+    # compute; the checkpoint is cast back to bf16 on save.
+    model = AutoModelForCausalLM.from_pretrained(cfg.model.name, torch_dtype=torch.float32)
     model.gradient_checkpointing_enable()
+    model.train()  # from_pretrained yields eval mode; checkpointing is gated on it
     optimizer = make_optimizer(model, ocfg.lr)
     model, optimizer, loader = accelerator.prepare(model, optimizer, loader)
     # Scheduler NOT accelerator-prepared (prepared schedulers tick
@@ -143,6 +147,9 @@ def train_oracle_sft(
     # (and thus the hook) survives; scan runs inside the hook on live ids.
     state = InjectionState()
     register_injection_hook(accelerator.unwrap_model(model), meta, state)
+    # Injected vectors must match the embedding output dtype (fp32 weights
+    # here; the hook writes them into the embedding output tensor).
+    emb_dtype = accelerator.unwrap_model(model).get_input_embeddings().weight.dtype
 
     metrics = MetricsLogger(
         # keyed by checkpoint name so parallel/sequential sweep arms don't
@@ -169,7 +176,7 @@ def train_oracle_sft(
             with accelerator.accumulate(model):
                 state.vectors = _batch_vectors(
                     store, whitening, batch["store_rows"], alpha,
-                    accelerator.device, torch.bfloat16,
+                    accelerator.device, emb_dtype,
                 )
                 out = model(
                     input_ids=batch["input_ids"],
@@ -191,7 +198,7 @@ def train_oracle_sft(
                     # are collectives); only rank 0 logs.
                     ce = _holdout_ce(
                         model, holdout_batches, store, whitening, alpha, state,
-                        accelerator.device,
+                        accelerator.device, emb_dtype,
                     )
                     if accelerator.is_main_process:
                         metrics.log(step=step, holdout_ce=ce)
@@ -203,8 +210,13 @@ def train_oracle_sft(
     accelerator.wait_for_everyone()
     # Collectives on ALL ranks; rank 0 alone touches the filesystem.
     state_dict = accelerator.get_state_dict(model)
+    state_dict = {  # save in bf16: downstream loads bf16; fp32 doubles the artifact
+        k: v.to(torch.bfloat16) if torch.is_floating_point(v) else v
+        for k, v in state_dict.items()
+    }
     final_ce = _holdout_ce(
-        model, holdout_batches, store, whitening, alpha, state, accelerator.device
+        model, holdout_batches, store, whitening, alpha, state, accelerator.device,
+        emb_dtype,
     )
     if accelerator.is_main_process:
         out_dir.mkdir(parents=True, exist_ok=True)

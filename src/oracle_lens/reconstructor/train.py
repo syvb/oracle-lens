@@ -97,8 +97,16 @@ def train_reconstructor(
     )
     eval_batches = list(eval_loader)
 
-    model = load_reconstructor(cfg.model.name, layer_index=cfg.model.layer_index)
+    # fp32 master weights are load-bearing: AdamW steps at lr ~1e-5 sit below
+    # the bf16 ulp of Qwen-scale weights, so a bf16-loaded model silently
+    # freezes its backbone (only the 10x-lr head trains). bf16 compute comes
+    # from autocast via Accelerator(mixed_precision="bf16"); the checkpoint is
+    # cast back to bf16 on save.
+    model = load_reconstructor(
+        cfg.model.name, layer_index=cfg.model.layer_index, dtype=torch.float32
+    )
     model.gradient_checkpointing_enable()
+    model.train()  # from_pretrained yields eval mode; checkpointing is gated on it
     optimizer = make_optimizer(model, rcfg.lr, rcfg.head_lr_mult)
     model, optimizer, loader = accelerator.prepare(model, optimizer, loader)
     # The scheduler is deliberately NOT accelerator-prepared: prepared
@@ -163,6 +171,10 @@ def train_reconstructor(
     # get_state_dict is a collective under FSDP — every rank must enter it;
     # only rank 0 touches the filesystem.
     state = accelerator.get_state_dict(model)
+    state = {  # save in bf16: downstream loads bf16, and fp32 doubles the artifact
+        k: v.to(torch.bfloat16) if torch.is_floating_point(v) else v
+        for k, v in state.items()
+    }
     if accelerator.is_main_process:
         out_dir.mkdir(parents=True, exist_ok=True)
         accelerator.unwrap_model(model).save_pretrained(out_dir, state_dict=state)
