@@ -97,6 +97,15 @@ def generate_corpus(
     num_shards: int | None = None,
 ) -> int:
     from vllm import LLM, SamplingParams, TokensPrompt  # lazy: GPU-node only
+    from transformers import PreTrainedTokenizerBase
+
+    # vLLM 0.10.x (the CUDA-12.8 wheel used on driver-570 hosts) reads this
+    # legacy Transformers property. Transformers 5 removed it; its old value
+    # is exactly the still-present `all_special_tokens` list.
+    if not hasattr(PreTrainedTokenizerBase, "all_special_tokens_extended"):
+        PreTrainedTokenizerBase.all_special_tokens_extended = property(  # type: ignore[attr-defined]
+            lambda self: self.all_special_tokens
+        )
 
     tokenizer = load_subject_tokenizer(cfg.model.name)
     prompts = pq.read_table(prompts_path).to_pydict()
