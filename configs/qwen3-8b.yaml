@@ -15,7 +15,9 @@ generation:
   n_conversations: 100000
   temperature: 0.7       # Qwen3 non-thinking recommended — verify vs model card
   top_p: 0.8
-  max_new_tokens: 600
+  # Empirical cap audit (2k random prompts, 16,384-token ceiling): 2,304
+  # covers 95.24% of responses. Length finishes remain explicit in corpus.
+  max_new_tokens: 2304
 
 whitening:
   ridge_frac: 0.01       # sweep one order each way if teacher FVE is bad (§10.4)
