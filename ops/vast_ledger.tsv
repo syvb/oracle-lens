@@ -1,1 +1,2 @@
 contract_id	label	gpu	usd_per_hr	bw_usd_per_tb_down_up	created_at	purpose	destroyed_at
+45036003	oracle-lens-m01-0716-0045	A100-PCIE-80GB	1.028	2.667/4.000	2026-07-16T00:33:40Z	M0 corpus and M1 activations/whitening/layer-check	
