@@ -42,6 +42,50 @@ def _eval_rows(table, n_samples: int) -> list[int]:
     )[:n_samples]
 
 
+def teacher_on_eval_baseline(
+    cfg: Config, run: RunPaths, table, rows, targets_w: torch.Tensor, *, device: str
+) -> float:
+    """Teacher NN-OMP recomputed ON THE EVAL ROWS (same N sampler, same
+    half-dictionary convention) so the §8.1 supervised-ceiling row lives on
+    the same split as every other row — gate.json's number is the teacher
+    split and only distributionally comparable."""
+    from collections import defaultdict as dd
+
+    from oracle_lens.teacher.decompose import _seed64
+    from oracle_lens.teacher.nnomp import nn_omp
+
+    by_n: dict[int, list[int]] = dd(list)  # bucket -> positions into `rows`
+    for j, i in enumerate(rows):
+        conv, pos = table["conversation_id"][i].as_py(), table["pos"][i].as_py()
+        _, n = _sample_kn(cfg, conv, pos)
+        by_n[n].append(j)
+
+    fves: list[float] = []
+    for n, members in sorted(by_n.items()):
+        dictionary = DictionaryBucket(bucket_dir(run.dictionary_dir, n)).directions(device)
+        seeds = torch.tensor(
+            [
+                _seed64(
+                    cfg.teacher.seed, "half",
+                    table["conversation_id"][rows[j]].as_py(),
+                    table["pos"][rows[j]].as_py(),
+                )
+                for j in members
+            ],
+            dtype=torch.int64,
+            device=device,
+        )
+        res = nn_omp(
+            dictionary,
+            targets_w[members].to(device),
+            seeds=seeds,
+            max_atoms=cfg.teacher.max_atoms,
+            min_gain=cfg.teacher.min_gain,
+        )
+        fves.extend(res.final_fve.cpu().tolist())
+    return float(np.mean(fves))
+
+
 def random_dictionary_baseline(
     cfg: Config, run: RunPaths, table, rows, targets_w: torch.Tensor
 ) -> float:
@@ -167,15 +211,20 @@ def run_baselines(
     results["true_continuation_fve_by_k"] = true_continuation_baseline(
         cfg, run, table, rows, targets_w, reconstructor, tokenizer, device=device
     )
+    results["teacher_eval_split_fve"] = teacher_on_eval_baseline(
+        cfg, run, table, rows, targets_w, device=device
+    )
     if not skip_jlens and (run.layer_check_dir / "lens.pt").exists():
         results["jlens_top8_fve"] = jlens_baseline(
             cfg, run, targets_raw, targets_w, reconstructor, tokenizer, device=device
         )
 
-    # Pull the already-computed rows for context.
+    # Pull the already-computed rows for context (teacher-split convention).
     teacher_gate = run.teacher.parent / "gate.json"
     if teacher_gate.exists():
-        results["teacher_fve"] = json.loads(teacher_gate.read_text())["fve_mean_overall"]
+        results["teacher_fve_teacher_split"] = json.loads(teacher_gate.read_text())[
+            "fve_mean_overall"
+        ]
     for name, d in (("oracle_sft", run.oracle_sft_dir), ("oracle_rl", run.oracle_rl_dir)):
         rpt = d / "eval.json"
         if rpt.exists():

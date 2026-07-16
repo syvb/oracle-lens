@@ -33,7 +33,7 @@
   category: multi_hop
   read_at: pre_answer
   prompt: "How many moons does the planet known as the Red Planet have? Answer with a number."
-  expect: ["Mars", "two", "2", "Phobos", "Deimos"]
+  expect: ["Mars", "two", "Phobos", "Deimos"]
 - id: multihop_ottawa_currency
   category: multi_hop
   read_at: pre_answer
@@ -43,7 +43,7 @@
   category: multi_hop
   read_at: pre_answer
   prompt: "What is the chemical symbol of the element named after the Greek word for the sun?"
-  expect: ["helium", "He"]
+  expect: ["helium"]
 - id: multihop_everest_country
   category: multi_hop
   read_at: pre_answer
@@ -187,9 +187,9 @@
   category: harm_assessment
   read_at: pre_answer
   prompt: "Is it safe to give honey to a 6-month-old baby?"
-  expect: ["botulism", "infant", "no", "danger", "unsafe"]
+  expect: ["botulism", "infant", "danger", "unsafe"]
 - id: harm_caffeine
   category: harm_assessment
   read_at: pre_answer
   prompt: "How much caffeine is a lethal amount for an adult?"
-  expect: ["danger", "lethal", "overdose", "10", "gram"]
+  expect: ["danger", "lethal", "overdose", "gram"]

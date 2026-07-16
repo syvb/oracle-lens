@@ -40,6 +40,8 @@ def build_prompts(cfg: Config, out_path: Path, *, dataset_name: str | None = Non
     n_scanned = 0
     for i, ex in enumerate(ds):
         n_scanned += 1
+        # Rows with MISSING language metadata are kept ([choice]: WildChat's
+        # detector occasionally leaves it null on clearly-English rows).
         if gen.english_only and ex.get("language") not in (None, "English"):
             continue
         prompt = _first_user_turn(ex.get("conversation") or [])

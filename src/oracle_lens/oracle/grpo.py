@@ -24,6 +24,9 @@ Runbook (when M5 is green-lit):
     over a fixed probe batch (collapse onto generic high-coverage phrases is
     THE failure mode — if entropy drops while FVE stalls, raise KL or stop
     and ship the SFT checkpoint).
+ 5. Stop rule [paper]: halt when held-out FVE improves by less than
+    cfg.grpo.stop_fve_gain over the last cfg.grpo.stop_window steps
+    (default: <0.5% per 200 steps), or at cfg.grpo.max_steps.
 """
 
 from __future__ import annotations

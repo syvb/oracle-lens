@@ -21,7 +21,8 @@ only on a rented box.
 1. **Instance ownership (ENV.md §3, verbatim rule applies).** Only ever
    operate on instances you created for this task. Immediately after every
    `vastai create instance`, append a line to
-   `/home/debian/oracle-lens/runs/vast_ledger.tsv`:
+   `/home/debian/oracle-lens/ops/vast_ledger.tsv` (NOT under `runs/`, which is
+   gitignored — the ledger must be committable):
    `contract_id  label  gpu  $/hr  bw_$per_TB_down/up  created_at  purpose`.
    Destroy only IDs from this ledger; mark them destroyed with a timestamp.
    **Always destroy boxes when their stage's artifacts are safely on HF** —
@@ -31,7 +32,11 @@ only on a rented box.
    (project `oracle-lens`, entity `octahedral-systems`) and print a loud
    WARNING if the key is missing — treat that warning as a launch failure.
 3. **Secrets:** copy token *files* to boxes (`umask 077`), read via `$(cat ...)`
-   into env vars; never `echo $TOKEN`, never put keys in argv.
+   into env vars; never `echo $TOKEN`. ENV.md's own token-copy recipe expands
+   `$(cat ~/.hf_token)` inside the local ssh argv — that exact pattern is
+   blessed there and acceptable; what's forbidden is echoing token values or
+   passing them as long-lived flags (e.g. wandb keys on training command
+   lines — the env var is picked up automatically).
 4. **Budget:** target ≤ **$120** through M4 including retries; hard stop and
    report to the user if the ledger + forecast exceeds **$250**. Keep the
    ledger current — it is the budget instrument.
@@ -62,10 +67,13 @@ SXM) with the FSDP config; **[train-6B]** = the truncated reconstructor
 | 3 | `dictionary`, `teacher` | [infer] 48–80 GB | 3–6 h | $3–8 | `dictionary/` (~4 GB), `teacher/` | teacher FVE ≥ 0.15 |
 | 4a | `alpha-sweep` (4 arms × 2000 steps) | [train-8B]; arms parallelize on separate boxes | 4×1.5–2.5 h | $15–30 | alpha_sweep.json | pick α, commit config |
 | 4b | `oracle-sft` (smoke, then full), `oracle-eval` | [train-8B] | 4–7 h | $15–25 | `oracle_sft/checkpoint` (~16 GB), eval.json | ≥70% teacher FVE, ≥95% format |
-| 4c | `baselines`, `gallery` | [cheap-infer] (needs 2 models: subject + oracle → 48 GB safer; baselines' jlens row wants the lens box class) | 2–4 h | $2–5 | `eval/` (table.json, gallery.md) | **HUMAN: gallery review** |
+| 4c | `baselines`, `gallery` | **80 GB** — `gallery` holds THREE models resident (subject 8B + oracle 8B + truncated reconstructor ≈ 44 GB weights before KV cache); cheapest correct play is running 4c on the still-alive 4b box before destroying it. Only `baselines --skip-jlens` fits a 24–48 GB box. | 2–4 h | $2–8 | `eval/` (table.json, gallery.md) | **HUMAN: gallery review** |
 
 Totals: ~$50–100 GPU + bandwidth ≈ well inside the $120 target; wall-clock
-2–4 days mostly serialized (α-sweep in parallel saves ~6 h).
+2–4 days mostly serialized (α-sweep in parallel saves ~6 h). Time estimates
+assume Hopper/Ada-class throughput; on a 48 GB Ampere (A6000) multiply the
+0a/1a numbers by 2–3× — since $/result is then similar, prefer H100-class for
+those two stages when hourly prices are close.
 
 **Artifact home (create once, §3):** private HF dataset repo
 **`syvb/oracle-lens-qwen3-8b-artifacts`** mirroring `runs/qwen3-8b-v1/`
@@ -142,26 +150,41 @@ rsync -az -e "ssh -p $PORT" --exclude .git --exclude '.venv*' --exclude runs \
 #    vendored editables FIRST so `nla`/`jlens` resolve locally, and pin
 #    transformers to the dev-tested minor (5.14.*; the vendored-repo 4.x pin
 #    advice in ENV.md §4 does NOT apply to this pipeline — see third_party/README.md).
-ssh -p $PORT root@$IP 'set -e; curl -LsSf https://astral.sh/uv/install.sh | sh; \
-  cd /workspace/oracle-lens; ~/.local/bin/uv venv /workspace/venv --python 3.12; \
-  ~/.local/bin/uv pip install --python /workspace/venv/bin/python \
-    -e third_party/natural_language_autoencoders -e third_party/jacobian-lens \
-    -e . "transformers==5.14.*" pytest scipy'
-# stage-0 box only, AFTER the above:  ... uv pip install --python ... vllm
+#    The install pulls 3-6 GB of CUDA wheels — WELL over the 120-s foreground
+#    limit (ENV.md §5.2): run it DETACHED with a sentinel + background poller,
+#    exactly like step 7. Write the script to a file and scp it (heredoc rule).
+#    Script body:
+#      set -e; curl -LsSf https://astral.sh/uv/install.sh | sh
+#      cd /workspace/oracle-lens; ~/.local/bin/uv venv /workspace/venv --python 3.12
+#      ~/.local/bin/uv pip install --python /workspace/venv/bin/python \
+#        -e third_party/natural_language_autoencoders -e third_party/jacobian-lens \
+#        -e . "transformers==5.14.*" pytest scipy
+#      touch /workspace/DONE_env
+# stage-0 box only, AFTER the above (also detached): uv pip install ... vllm,
+#    then RE-VERIFY the pins — vllm may move transformers/torch, and this box
+#    writes the template fingerprint that M1 hard-checks; a silent bump here
+#    dead-ends the pipeline at collect with a full M0 redo:
+#      /workspace/venv/bin/python -c "import transformers; assert transformers.__version__.startswith('5.14')"
+#    (if the assert fails: uv pip install "transformers==5.14.*" again and re-run pytest)
 # 5) sanity: cuda available, tests pass, HF reachable
 ssh -p $PORT root@$IP '/workspace/venv/bin/python -c "import torch;print(torch.__version__, torch.cuda.is_available())" \
   && cd /workspace/oracle-lens && /workspace/venv/bin/python -m pytest -q'
-# 6) pull upstream artifacts from HF into /workspace/runs/qwen3-8b-v1/ (snapshot_download,
-#    allow_patterns per stage), 7) run the stage DETACHED with a sentinel:
+# 6) pull upstream artifacts from HF into /workspace/runs/qwen3-8b-v1/
+#    (snapshot_download with ONE allow_patterns list, ls-verify after; 16-30 GB
+#    -> DETACHED + poller, same as step 4), 7) run the stage DETACHED with a sentinel:
 ssh -p $PORT root@$IP 'cd /workspace/oracle-lens && export HF_HOME=/workspace/hf \
   HF_TOKEN=$(cat /root/.hf_token) WANDB_API_KEY=$(cat /root/.wandb_key) && \
   nohup /workspace/venv/bin/python -m oracle_lens.cli <stage> --runs-root /workspace/runs \
     > /workspace/<stage>.log 2>&1 < /dev/null && touch /workspace/DONE_<stage> &'
 # 8) poll with a BACKGROUND poller (run_in_background): every ~100 s check
 #    `test -f DONE_<stage>` OR the process died (bracket trick: pgrep -f "oracle_len[s]"),
-#    cap iterations (e.g. seq 1 200), tail the log through `tr "\r" "\n" | tail -5`.
-# 9) push artifacts to HF (upload_folder), VERIFY the upload listing, record
-#    `pip freeze > env.txt` + push it too, THEN destroy:
+#    cap iterations (e.g. seq 1 200 ≈ 5.5 h — long stages may outlive one
+#    poller: cap expiry is NOT failure, just re-arm a fresh poller),
+#    tail the log through `tr "\r" "\n" | tail -5`.
+# 9) push artifacts to HF (upload_folder — multi-GB, so DETACHED + poller like
+#    step 4), VERIFY the upload listing (names + sizes) from the dev box,
+#    record the env via `~/.local/bin/uv pip freeze --python /workspace/venv/bin/python > env.txt`
+#    (uv venvs ship NO pip — `pip freeze` errors) + push it too, THEN destroy:
 echo y | vastai destroy instance $ID   # exact contract id from the ledger
 ```
 
@@ -218,7 +241,11 @@ hand-edit on a GPU box or provenance dies).
   length across epochs); real added data means more positions — bump
   `positions.per_response`, re-run `positions → split → collect → whiten`
   on the M0/M1 box class, and retrain. That's a ~$5 detour, but consult the
-  user first since it regenerates the store (row-alignment rule, §6).
+  user first since it regenerates the store (row-alignment rule, §6), and if
+  you do it: DELETE `reconstructor/`, `dictionary/`, `teacher/` locally AND
+  on HF, and push the new positions/activations/whitening OVER the old ones
+  (same paths, replaced — never side by side), so no later box can pull a
+  stale row-index generation.
 - Gate = `reconstructor/eval.json` (controls separation, continuation-FVE at
   N≤8). On fail after one remedy → STOP per §0.5.
 
@@ -232,21 +259,23 @@ hand-edit on a GPU box or provenance dies).
   expensive branch, get user sign-off first).
 
 **M4 (`alpha-sweep → oracle-sft → oracle-eval → baselines → gallery`).**
-- Sweep: 4 arms × 2000 steps. Cheapest wall-clock: 4 parallel [train-8B]
-  boxes, one arm each via
-  `oracle-sft --max-steps 2000 ...` — but the CLI's `alpha-sweep` runs arms
-  sequentially on one box; parallelizing means invoking
-  `python -c "from oracle_lens.oracle.sft import train_oracle_sft; ..."` per
-  box with an explicit `alpha=` and out_dir, then collecting the 4
-  `holdout_ce` values by hand. Sequential-on-one-box is simpler and only ~6 h
-  — pick based on schedule, not dogma.
+- Sweep: 4 arms × 2000 steps. Default: `oracle-lens alpha-sweep` runs the
+  arms sequentially on one box (~6 h) — simplest, recommended. If wall-clock
+  matters, parallel arms across 4 boxes are possible ONLY via
+  `python -c "from oracle_lens.oracle.sft import train_oracle_sft; ..."` with
+  an explicit `alpha=` and `out_dir=` per box, collecting the 4 `holdout_ce`
+  values by hand. Do NOT try to parallelize with `oracle-sft --max-steps
+  2000`: the CLI exposes no alpha override, so all four boxes would train the
+  SAME default alpha and clobber the real checkpoint path.
 - After the sweep: set `oracle.alpha` in the config (absolute value =
   best-multiplier × √4096 = ×64), commit, rsync.
-- `oracle-eval` + `baselines` + `gallery` run on a cheaper box, but note
-  `gallery` and `baselines --skip-jlens=false` load TWO 8B models (subject +
-  oracle / jlens) — 48 GB minimum, sequential model loading; if OOM, run
-  `baselines --skip-jlens` on the cheap box and the jlens row on the M4 box
-  before destroying it.
+- `oracle-eval` + `baselines` + `gallery`: cheapest correct play is running
+  all three on the 4b training box BEFORE destroying it (80+ GB, models
+  already cached). `gallery` holds THREE models resident (subject 8B +
+  oracle 8B + truncated reconstructor ≈ 44 GB of weights plus KV cache) —
+  it does not fit 24–48 GB boxes. Only `baselines --skip-jlens` (a bare
+  store_true flag — `--skip-jlens=false` is an argparse error; the default,
+  jlens INCLUDED, is just omitting the flag) is cheap-box friendly.
 - Deliverable review (§0.5): pull `eval/table.json` + `eval/gallery.md` to the
   dev box, present to the user with the M4 gate numbers, and stop. M5 (GRPO)
   is a separate decision and a separate stack (`oracle/grpo.py` runbook +

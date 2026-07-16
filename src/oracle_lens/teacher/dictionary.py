@@ -80,6 +80,9 @@ def build_dictionary(
             if phrase.strip():
                 seen.setdefault(phrase, None)
         phrases = list(seen)
+        if not phrases:
+            print(f"dictionary N={n}: no phrases (corpus too small?) — skipping bucket")
+            continue
         out = bucket_dir(run.dictionary_dir, n)
         out.mkdir(parents=True, exist_ok=True)
 

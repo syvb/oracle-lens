@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 from pathlib import Path
 
 import torch
@@ -96,11 +97,12 @@ def train_oracle_sft(
     alpha = alpha if alpha is not None else resolve_alpha(cfg)
     out_dir = out_dir or run.oracle_sft_dir / "checkpoint"
 
+    # World size from the launcher env, NOT torch.cuda.device_count(): a plain
+    # single-process run on an 8-GPU box must still accumulate to batch_size.
+    world_size = int(os.environ.get("WORLD_SIZE") or 1)
+    grad_accum = max(1, ocfg.batch_size // (device_batch_size * world_size))
     accelerator = Accelerator(
-        mixed_precision="bf16",
-        gradient_accumulation_steps=max(
-            1, ocfg.batch_size // (device_batch_size * max(1, torch.cuda.device_count()))
-        ),
+        mixed_precision="bf16", gradient_accumulation_steps=grad_accum
     )
     tokenizer = load_subject_tokenizer(cfg.model.name)
     meta = oracle_token_meta(tokenizer, cfg)
@@ -129,12 +131,13 @@ def train_oracle_sft(
     model = AutoModelForCausalLM.from_pretrained(cfg.model.name, torch_dtype=torch.bfloat16)
     model.gradient_checkpointing_enable()
     optimizer = make_optimizer(model, ocfg.lr)
-    total_steps = max_steps or (len(loader) * ocfg.epochs) // accelerator.gradient_accumulation_steps
+    model, optimizer, loader = accelerator.prepare(model, optimizer, loader)
+    # Scheduler NOT accelerator-prepared (prepared schedulers tick
+    # num_processes times per optimizer step, breaking max_steps/warmup);
+    # everything stays in OPTIMIZER-step units, stepped once per sync below.
+    total_steps = max_steps or max(1, (len(loader) * ocfg.epochs) // grad_accum)
     scheduler = torch.optim.lr_scheduler.LambdaLR(
         optimizer, cosine_lr_lambda(total_steps, ocfg.warmup_steps)
-    )
-    model, optimizer, loader, scheduler = accelerator.prepare(
-        model, optimizer, loader, scheduler
     )
     # Hook AFTER prepare: FSDP wraps modules but the embedding module instance
     # (and thus the hook) survives; scan runs inside the hook on live ids.
@@ -142,7 +145,9 @@ def train_oracle_sft(
     register_injection_hook(accelerator.unwrap_model(model), meta, state)
 
     metrics = MetricsLogger(
-        (out_dir.parent / "metrics.jsonl"),
+        # keyed by checkpoint name so parallel/sequential sweep arms don't
+        # interleave into one file
+        (out_dir.parent / f"{out_dir.name}.metrics.jsonl"),
         enabled=accelerator.is_main_process,
         wandb_run_name=f"{cfg.run_name}-{out_dir.parent.name}-{out_dir.name}"
         if out_dir.name != "checkpoint"
@@ -175,34 +180,36 @@ def train_oracle_sft(
                 if accelerator.sync_gradients:
                     accelerator.clip_grad_norm_(model.parameters(), 1.0)
                 optimizer.step()
-                scheduler.step()
                 optimizer.zero_grad()
             if accelerator.sync_gradients:
+                scheduler.step()
                 step += 1
                 if step % 20 == 0:
                     metrics.log(step=step, loss=out.loss.item(), lr=scheduler.get_last_lr()[0])
-                if step % eval_every == 0 and accelerator.is_main_process:
+                if step % eval_every == 0:
+                    # ALL ranks run the eval forward (FSDP weight all-gathers
+                    # are collectives); only rank 0 logs.
                     ce = _holdout_ce(
-                        accelerator.unwrap_model(model), holdout_batches, store,
-                        whitening, alpha, state, accelerator.device,
+                        model, holdout_batches, store, whitening, alpha, state,
+                        accelerator.device,
                     )
-                    metrics.log(step=step, holdout_ce=ce)
-                    print(f"step {step}: holdout CE {ce:.4f}")
+                    if accelerator.is_main_process:
+                        metrics.log(step=step, holdout_ce=ce)
+                        print(f"step {step}: holdout CE {ce:.4f}")
                 if step >= total_steps:
                     done = True
                     break
 
     accelerator.wait_for_everyone()
+    # Collectives on ALL ranks; rank 0 alone touches the filesystem.
+    state_dict = accelerator.get_state_dict(model)
+    final_ce = _holdout_ce(
+        model, holdout_batches, store, whitening, alpha, state, accelerator.device
+    )
     if accelerator.is_main_process:
         out_dir.mkdir(parents=True, exist_ok=True)
-        accelerator.unwrap_model(model).save_pretrained(
-            out_dir, state_dict=accelerator.get_state_dict(model)
-        )
+        accelerator.unwrap_model(model).save_pretrained(out_dir, state_dict=state_dict)
         tokenizer.save_pretrained(out_dir)
-        final_ce = _holdout_ce(
-            accelerator.unwrap_model(model), holdout_batches, store, whitening,
-            alpha, state, accelerator.device,
-        )
         (out_dir / META_FILE).write_text(
             yaml.safe_dump(
                 {

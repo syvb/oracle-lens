@@ -29,7 +29,7 @@ def run_layer_check(
     dim_batch: int = 16,
 ) -> Path:
     import jlens
-    from jlens.examples import EXAMPLES, load_wikitext_prompts
+    from jlens.examples import EXAMPLES, load_wikitext_prompts, resolve_prompt
     from jlens.vis import build_page, compute_slice
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -51,10 +51,17 @@ def run_layer_check(
             prompts,
             dim_batch=dim_batch,
             checkpoint_path=str(out_dir / "lens_ckpt.pt"),
+            # each checkpoint is n_layers*d^2*4B (~2.4 GB at 8B scale) — don't
+            # rewrite it after every prompt
+            checkpoint_every=50,
         )
         lens.save(lens_path)
 
-    for i, prompt in enumerate(slice_prompts or EXAMPLES[:4]):
+    if slice_prompts is None:
+        # EXAMPLES entries are Example dataclasses (some chat-mode with
+        # prompt=None) — resolve to plain strings before compute_slice.
+        slice_prompts = [resolve_prompt(ex, tokenizer) for ex in EXAMPLES[:4]]
+    for i, prompt in enumerate(slice_prompts):
         data = compute_slice(model, lens, prompt, mask_display=True)  # Qwen: mask punct
         html, _, _ = build_page(
             data,

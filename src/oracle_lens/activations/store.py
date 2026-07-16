@@ -43,8 +43,21 @@ class ActivationStore:
     def meta(root: Path) -> dict:
         return yaml.safe_load((root / META_FILE).read_text())
 
+    # fp16 max is 65504; Qwen-family residual streams carry large outlier
+    # dims, and a single silent inf here would poison the (irreversible)
+    # whitening fit and every downstream target. Fail loudly instead.
+    _FP16_SAFE_MAX = 60000.0
+
     def write_rows(self, row_indices: np.ndarray, vectors: torch.Tensor) -> None:
-        self._mm[row_indices] = vectors.to(torch.float16).cpu().numpy()
+        v = vectors.float()
+        if not torch.isfinite(v).all() or v.abs().max() > self._FP16_SAFE_MAX:
+            bad = int((~torch.isfinite(v)).sum() + (v.abs() > self._FP16_SAFE_MAX).sum())
+            raise ValueError(
+                f"{bad} activation values non-finite or beyond fp16 range "
+                f"(max |x| = {v.abs().max().item():.3e}); switch the store to "
+                f"bf16/fp32 rather than truncating silently"
+            )
+        self._mm[row_indices] = v.to(torch.float16).cpu().numpy()
 
     def read_rows(self, row_indices: np.ndarray | list[int]) -> torch.Tensor:
         return torch.from_numpy(np.asarray(self._mm[row_indices])).to(torch.float32)

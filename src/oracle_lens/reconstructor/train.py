@@ -8,6 +8,7 @@ Single-GPU / debug runs work with plain `oracle-lens recon-train`.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import torch
@@ -63,11 +64,12 @@ def train_reconstructor(
     run.require(run.corpus, run.positions, run.whitening, run.activations_dir)
     set_seed(rcfg.seed)
 
+    # World size from the launcher env, NOT torch.cuda.device_count(): a plain
+    # single-process run on an 8-GPU box must still accumulate to batch_size.
+    world_size = int(os.environ.get("WORLD_SIZE") or 1)
+    grad_accum = max(1, rcfg.batch_size // (device_batch_size * world_size))
     accelerator = Accelerator(
-        mixed_precision="bf16",
-        gradient_accumulation_steps=max(
-            1, rcfg.batch_size // (device_batch_size * max(1, torch.cuda.device_count()))
-        ),
+        mixed_precision="bf16", gradient_accumulation_steps=grad_accum
     )
     tokenizer = load_subject_tokenizer(cfg.model.name)
     store = ActivationStore.open(run.activations_dir)
@@ -98,12 +100,14 @@ def train_reconstructor(
     model = load_reconstructor(cfg.model.name, layer_index=cfg.model.layer_index)
     model.gradient_checkpointing_enable()
     optimizer = make_optimizer(model, rcfg.lr, rcfg.head_lr_mult)
-    total_steps = max_steps or (len(loader) * rcfg.epochs) // accelerator.gradient_accumulation_steps
+    model, optimizer, loader = accelerator.prepare(model, optimizer, loader)
+    # The scheduler is deliberately NOT accelerator-prepared: prepared
+    # schedulers advance num_processes ticks per optimizer step, which breaks
+    # max_steps/warmup accounting. We keep everything in OPTIMIZER-step units
+    # and step manually once per sync (len(loader) is per-process post-prepare).
+    total_steps = max_steps or max(1, (len(loader) * rcfg.epochs) // grad_accum)
     scheduler = torch.optim.lr_scheduler.LambdaLR(
         optimizer, cosine_lr_lambda(total_steps, rcfg.warmup_steps)
-    )
-    model, optimizer, loader, scheduler = accelerator.prepare(
-        model, optimizer, loader, scheduler
     )
     metrics = MetricsLogger(
         run.reconstructor_dir / "metrics.jsonl",
@@ -134,30 +138,34 @@ def train_reconstructor(
                 if accelerator.sync_gradients:
                     accelerator.clip_grad_norm_(model.parameters(), 1.0)
                 optimizer.step()
-                scheduler.step()
                 optimizer.zero_grad()
             if accelerator.sync_gradients:
+                scheduler.step()
                 step += 1
                 if step % 20 == 0:
                     metrics.log(step=step, loss=loss.item(), lr=scheduler.get_last_lr()[0])
-                if step % eval_every == 0 and accelerator.is_main_process:
+                if step % eval_every == 0:
+                    # ALL ranks run the eval forward — the model is FSDP-
+                    # sharded, so a rank-0-only forward would deadlock on the
+                    # weight all-gather collectives. Only rank 0 logs.
                     cos = _quick_eval(
-                        accelerator.unwrap_model(model), eval_batches, store, whitening,
-                        accelerator.device,
+                        model, eval_batches, store, whitening, accelerator.device
                     )
-                    metrics.log(step=step, eval_cosine=cos)
-                    print(f"step {step}: eval cosine {cos:.4f}")
+                    if accelerator.is_main_process:
+                        metrics.log(step=step, eval_cosine=cos)
+                        print(f"step {step}: eval cosine {cos:.4f}")
                 if step >= total_steps:
                     done = True
                     break
 
     accelerator.wait_for_everyone()
     out_dir = run.reconstructor_dir / "checkpoint"
+    # get_state_dict is a collective under FSDP — every rank must enter it;
+    # only rank 0 touches the filesystem.
+    state = accelerator.get_state_dict(model)
     if accelerator.is_main_process:
         out_dir.mkdir(parents=True, exist_ok=True)
-        accelerator.unwrap_model(model).save_pretrained(
-            out_dir, state_dict=accelerator.get_state_dict(model)
-        )
+        accelerator.unwrap_model(model).save_pretrained(out_dir, state_dict=state)
         tokenizer.save_pretrained(out_dir)
         save_recon_meta(out_dir, cfg, run.whitening)
         print(f"reconstructor -> {out_dir}")

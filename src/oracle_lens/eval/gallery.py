@@ -15,6 +15,7 @@ The gallery, not the FVE number, decides whether the tool is useful (§8.2).
 from __future__ import annotations
 
 import hashlib
+import re
 from pathlib import Path
 
 import pyarrow.parquet as pq
@@ -24,6 +25,7 @@ import yaml
 from oracle_lens.activations.collect import TokenIdExtractor
 from oracle_lens.config import Config
 from oracle_lens.corpus.positions import DelimiterOracle
+from oracle_lens.corpus.splits import split_for_conversation
 from oracle_lens.oracle.decode import OracleDecoder
 from oracle_lens.rendering import render_first_turn, sampling_params
 from oracle_lens.runs import RunPaths
@@ -83,13 +85,19 @@ def _sample_continuations(
     return [tokenizer.decode(o[len(prefix_ids):]) for o in out]
 
 
-def _readout_block(decoder: OracleDecoder, act: torch.Tensor, ns=(4, 8), k: int = 8) -> list[str]:
-    lines = []
+def _readout_block(
+    decoder: OracleDecoder, act: torch.Tensor, ns=(4, 8), k: int = 8
+) -> tuple[list[str], list[str]]:
+    """Returns (markdown lines, raw phrases). Auto-checks match against the
+    RAW phrases only — the formatted lines contain coefficient digits that
+    would trivially self-match numeric expect-keywords."""
+    lines, phrases = [], []
     for n in ns:
         res = decoder.decode(act, n=n, k=k)
         ranked = ", ".join(f"`{p}` ({c:.2f})" for p, c in res.ranked[:k])
         lines.append(f"  - N={n} (FVE {res.fve:.2f}): {ranked}")
-    return lines
+        phrases.extend(res.phrases)
+    return lines, phrases
 
 
 def run_gallery(
@@ -125,27 +133,34 @@ def run_gallery(
             f"**Response:** {tokenizer.decode(response_ids, skip_special_tokens=True)!r}",
             "",
         ]
-        readout_text = []
+        readout_phrases: list[str] = []
         for pos, act in zip(read_at, acts):
             tok = tokenizer.decode([full[pos]])
             lines.append(f"- position {pos} (token {tok!r}):")
-            block = _readout_block(decoder, act)
+            block, phrases = _readout_block(decoder, act)
             lines += block
-            readout_text += block
+            readout_phrases += phrases
         expected = probe.get("expect") or []
-        joined = " ".join(readout_text).lower()
-        found = [e for e in expected if e.lower() in joined]
+        joined = " ".join(readout_phrases).lower()
+        found = [
+            e for e in expected
+            if re.search(rf"\b{re.escape(e.lower())}\b", joined)
+        ]
         if expected:
-            hit = bool(found)
-            hits += hit
+            hits += bool(found)
             lines.append(f"- auto-check: expected {expected}, found {found or 'none'}")
         lines += ["- [ ] PASS (manual review)", ""]
 
-    # Delimiter scan over held-out transcripts (§8.2).
+    # Delimiter scan over held-out transcripts (§8.2) — EVAL split only:
+    # other splits' delimiter positions may literally be training examples.
     lines += ["# Delimiter scan", ""]
     corpus = pq.read_table(run.corpus, columns=["conversation_id", "prompt_ids", "response_ids"])
+    eval_rows = [
+        i for i in range(corpus.num_rows)
+        if split_for_conversation(cfg, corpus["conversation_id"][i].as_py()) == "eval"
+    ]
     order = sorted(
-        range(corpus.num_rows),
+        eval_rows,
         key=lambda i: hashlib.sha256(
             f"gallery|{corpus['conversation_id'][i].as_py()}".encode()
         ).hexdigest(),
@@ -168,7 +183,7 @@ def run_gallery(
             tok = tokenizer.decode([full[pos]])
             conts = _sample_continuations(subject, tokenizer, full[: pos + 1])
             lines.append(f"- {kind} position {pos} (token {tok!r}):")
-            lines += _readout_block(decoder, act)
+            lines += _readout_block(decoder, act)[0]
             lines += [f"  - sampled continuation: `{c}`" for c in conts]
         lines.append("")
 

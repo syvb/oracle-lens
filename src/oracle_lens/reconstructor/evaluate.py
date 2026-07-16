@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -52,11 +53,16 @@ def evaluate_reconstructor(
     all_cos: list[float] = []
     for n in EVAL_NS:
         pairs = build_pairs(
-            cfg, run.corpus, run.positions, tokenizer,
-            split="eval", fixed_n=n, limit=n_per_bucket,
+            cfg, run.corpus, run.positions, tokenizer, split="eval", fixed_n=n
         )
         if not pairs:
             continue
+        # Deterministic hash-subsample: taking the FIRST n_per_bucket rows
+        # would bias every bucket toward early-file conversations.
+        pairs.sort(
+            key=lambda p: hashlib.sha256(f"recon-eval|{p.store_row}".encode()).hexdigest()
+        )
+        pairs = pairs[:n_per_bucket]
         dirs = encode_phrases(
             model, tokenizer, [p.phrase for p in pairs], template, device=device
         )
@@ -76,11 +82,18 @@ def evaluate_reconstructor(
         }
         all_cos.append(cos.mean().item())
 
-        if n == 4:  # controls on one representative bucket
-            shuffled_cos = (dirs.roll(1, dims=0) * tw_unit).sum(-1).mean().item()
+        if not report["controls"]:  # controls on the first non-empty bucket
+            # Random-permutation pairing (a roll would mostly pair rows from
+            # the SAME conversation — build_pairs output is conversation-
+            # grouped — inflating the control).
+            perm = torch.randperm(
+                len(pairs), generator=torch.Generator().manual_seed(0)
+            )
+            shuffled_cos = (dirs[perm] * tw_unit).sum(-1).mean().item()
             mean_dir = unit(tw_unit.mean(dim=0, keepdim=True))
             mean_cos = (mean_dir * tw_unit).sum(-1).mean().item()
             report["controls"] = {
+                "control_bucket_n": n,
                 "shuffled_pairing_cosine": shuffled_cos,
                 "mean_direction_cosine": mean_cos,
                 "true_pairing_cosine": cos.mean().item(),
@@ -89,16 +102,22 @@ def evaluate_reconstructor(
     # M2 gate (PLAN.md §5): (a) clear separation from controls,
     # (c) continuation FVE meaningfully above zero at N <= 8.
     # (b) — cosine still improving vs. plateaued — is read off metrics.jsonl.
+    # Thresholds are [choice] config knobs (nothing published to anchor on).
     ctrl = report["controls"]
-    sep = ctrl["true_pairing_cosine"] - max(
-        ctrl["shuffled_pairing_cosine"], ctrl["mean_direction_cosine"]
+    sep = (
+        ctrl["true_pairing_cosine"]
+        - max(ctrl["shuffled_pairing_cosine"], ctrl["mean_direction_cosine"])
+        if ctrl
+        else None
     )
     small_n_fve = [report["by_n"][n]["continuation_fve_mean"] for n in (1, 2, 4, 8) if n in report["by_n"]]
+    rcfg = cfg.reconstructor
     report["gate"] = {
         "control_separation": sep,
-        "control_separation_ok": sep > 0.1,
+        "control_separation_ok": sep is not None and sep > rcfg.gate_min_separation,
         "small_n_continuation_fve_min": min(small_n_fve) if small_n_fve else None,
-        "small_n_continuation_fve_ok": bool(small_n_fve) and min(small_n_fve) > 0.02,
+        "small_n_continuation_fve_ok": bool(small_n_fve)
+        and min(small_n_fve) > rcfg.gate_min_continuation_fve,
         "cosine_mean_overall": sum(all_cos) / len(all_cos) if all_cos else None,
     }
 

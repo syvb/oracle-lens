@@ -51,6 +51,19 @@ def test_positions_short_response():
     assert sample_positions_for_response("c1", 5, [], _is_delim, cfg) == []
 
 
+def test_store_rejects_fp16_overflow(tmp_path):
+    import pytest
+
+    store = ActivationStore.create(tmp_path / "acts", 4, 8, meta={})
+    bad = torch.ones(1, 8)
+    bad[0, 3] = 70000.0  # beyond fp16 range
+    with pytest.raises(ValueError, match="fp16"):
+        store.write_rows(np.array([0]), bad)
+    bad[0, 3] = float("inf")
+    with pytest.raises(ValueError, match="non-finite"):
+        store.write_rows(np.array([0]), bad)
+
+
 def test_store_round_trip(tmp_path):
     store = ActivationStore.create(tmp_path / "acts", 10, 8, meta={"layer_index": 2})
     vecs = torch.randn(4, 8)

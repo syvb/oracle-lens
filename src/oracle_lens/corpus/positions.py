@@ -38,6 +38,9 @@ POSITIONS_SCHEMA = pa.schema(
     ]
 )
 
+# [choice] Broader than the plan's "periods, newlines, end-of-turn" wording:
+# any sentence-final punctuation plus every special token counts as a
+# delimiter. Report this deviation (PLAN.md §11).
 _DELIMITER_TAILS = (".", "\n", "!", "?", ":", ";")
 
 

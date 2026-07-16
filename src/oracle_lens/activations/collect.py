@@ -96,6 +96,9 @@ def collect_activations(cfg: Config, corpus_path: Path, positions_path: Path, ou
         corpus["prompt_ids"].to_pylist(),
         corpus["response_ids"].to_pylist(),
     ):
+        # A duplicate id would silently pair one conversation's positions with
+        # another's tokens — corrupt activations with no crash.
+        assert conv_id not in full_ids, f"duplicate conversation_id {conv_id!r} in corpus"
         full_ids[conv_id] = list(p_ids) + list(r_ids)
 
     positions = pq.read_table(positions_path, columns=["conversation_id", "pos"])

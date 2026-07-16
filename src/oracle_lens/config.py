@@ -72,6 +72,9 @@ class ReconstructorCfg:
     epochs: int = 2
     warmup_steps: int = 100
     seed: int = 3
+    # M2 gate thresholds [choice] — PLAN.md §5 declines absolute numbers
+    gate_min_separation: float = 0.1
+    gate_min_continuation_fve: float = 0.02
 
 
 @dataclass
@@ -124,6 +127,10 @@ class GrpoCfg:
     kl_coef: float = 1e-3
     max_steps: int = 1000
     eval_every: int = 100
+    # Stop rule [paper]: halt when held-out FVE gains fall below
+    # stop_fve_gain over a stop_window of steps (plan: <0.5% per 200 steps).
+    stop_fve_gain: float = 5e-3
+    stop_window: int = 200
     n_penalty: float = 0.01  # per-token deviation from requested N
     k_penalty: float = 0.05  # per-phrase deviation from requested K
 

@@ -11,6 +11,7 @@ true activation — the standard decode path [paper].
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -28,7 +29,11 @@ from oracle_lens.oracle.prompts import (
     render_oracle_prompt,
 )
 from oracle_lens.oracle.sft import META_FILE
-from oracle_lens.reconstructor.model import encode_phrases, load_reconstructor
+from oracle_lens.reconstructor.model import (
+    encode_phrases,
+    load_recon_meta,
+    load_reconstructor,
+)
 from oracle_lens.rendering import load_subject_tokenizer
 
 
@@ -54,19 +59,23 @@ class OracleDecoder:
         reconstructor_dir: Path | None = None,
         device: str = "cuda",
     ) -> None:
-        self.cfg = cfg
-        self.device = device
+        # Prompt templates come from the CHECKPOINT metas, not the live config
+        # — an edited config between SFT and eval must not silently change the
+        # prompts the models were trained with.
         meta = yaml.safe_load((Path(oracle_dir) / META_FILE).read_text())
+        self.cfg = copy.deepcopy(cfg)
+        self.cfg.oracle.prompt_template = meta["prompt_template"]
+        self.device = device
         self.alpha: float = meta["alpha"]
         self.whitening = WhiteningTransform.load(meta["whitening_path"])
         self.tokenizer = load_subject_tokenizer(str(oracle_dir))
-        self.token_meta = oracle_token_meta(self.tokenizer, cfg)
+        self.token_meta = oracle_token_meta(self.tokenizer, self.cfg)
         self.oracle = AutoModelForCausalLM.from_pretrained(
             str(oracle_dir), torch_dtype=torch.bfloat16
         ).to(device).eval()
-        self.reconstructor = load_reconstructor(
-            reconstructor_dir or meta["reconstructor"]
-        ).to(device).eval()
+        recon_dir = Path(reconstructor_dir or meta["reconstructor"])
+        self.recon_template: str = load_recon_meta(recon_dir)["prompt_template"]
+        self.reconstructor = load_reconstructor(recon_dir).to(device).eval()
 
     @torch.no_grad()
     def decode_batch(
@@ -76,10 +85,15 @@ class OracleDecoder:
         n: int,
         k: int,
         temperature: float = 0.0,
-        max_new_tokens: int = 512,
+        max_new_tokens: int | None = None,
     ) -> list[DecodeResult]:
         """activations_raw: [B, d] RAW (unwhitened) layer-l* activations, all
         decoded with the same requested (N, K)."""
+        if max_new_tokens is None:
+            # Budget must hold K phrases of N tokens + newlines + the
+            # <explanation> tags; a fixed 512 truncates (K=16, N=32) outputs,
+            # silently zeroing those FVE cells.
+            max_new_tokens = k * (n + 4) + 32
         bsz = activations_raw.shape[0]
         prompt_ids = render_oracle_prompt(self.tokenizer, self.cfg, self.token_meta, k=k, n=n)
         input_ids = torch.tensor(prompt_ids, dtype=torch.long).repeat(bsz, 1).to(self.device)
@@ -114,7 +128,7 @@ class OracleDecoder:
         if flat:
             dirs_flat = encode_phrases(
                 self.reconstructor, self.tokenizer, flat,
-                self.cfg.reconstructor.prompt_template, device=self.device,
+                self.recon_template, device=self.device,
             )
         offset = 0
         k_max = max((len(ps) for ps in all_phrases), default=0)
