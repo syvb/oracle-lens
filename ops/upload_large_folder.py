@@ -14,12 +14,6 @@ def main() -> None:
     parser.add_argument("--workers", type=int, default=8)
     args = parser.parse_args()
     api = HfApi()
-    api.create_repo(
-        "syvb/oracle-lens-qwen3-8b-artifacts",
-        repo_type="dataset",
-        private=False,
-        exist_ok=True,
-    )
     api.upload_large_folder(
         repo_id="syvb/oracle-lens-qwen3-8b-artifacts",
         repo_type="dataset",
