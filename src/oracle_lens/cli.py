@@ -37,7 +37,12 @@ def main() -> None:
 
     for name, extra in {
         "prompts": [],
-        "generate": [("--limit", int, None)],
+        "generate": [
+            ("--limit", int, None),
+            ("--shard-index", int, None),
+            ("--num-shards", int, None),
+        ],
+        "merge-corpus": [("--num-shards", int, None)],
         "verify": [("--n-samples", int, 200)],
         "positions": [],
         "split": [],
@@ -72,7 +77,22 @@ def main() -> None:
     elif args.cmd == "generate":
         from oracle_lens.corpus.generate import generate_corpus
 
-        generate_corpus(cfg, run.prompts, run.corpus, limit=args.limit)
+        generate_corpus(
+            cfg,
+            run.prompts,
+            run.corpus,
+            limit=args.limit,
+            shard_index=args.shard_index,
+            num_shards=args.num_shards,
+        )
+    elif args.cmd == "merge-corpus":
+        from oracle_lens.corpus.merge import merge_corpus_shards
+
+        if args.num_shards is None:
+            raise SystemExit("merge-corpus requires --num-shards")
+        merge_corpus_shards(
+            cfg, run.prompts, run.corpus, num_shards=args.num_shards
+        )
     elif args.cmd == "verify":
         from oracle_lens.corpus.verify import verify_token_identity
 

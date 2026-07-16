@@ -5,7 +5,13 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import torch
 
-from oracle_lens.corpus.generate import CORPUS_SCHEMA, write_corpus_sidecar
+from oracle_lens.corpus.generate import (
+    CORPUS_SCHEMA,
+    corpus_shard_path,
+    seed_for_conversation,
+    shard_for_conversation,
+    write_corpus_sidecar,
+)
 from oracle_lens.corpus.verify import verify_token_identity
 from oracle_lens.rendering import (
     load_subject_tokenizer,
@@ -72,6 +78,32 @@ def test_fingerprint_stable_across_loads(cfg, tiny_tokenizer_dir):
     cfg2 = Config()
     cfg2.model.name = cfg.model.name
     assert template_fingerprint(a, cfg) == template_fingerprint(b, cfg2)
+
+
+def test_parallel_corpus_shards_merge_in_prompt_order(cfg, tiny_tokenizer, tmp_path):
+    from oracle_lens.corpus.merge import merge_corpus_shards
+
+    source = _write_tiny_corpus(cfg, tiny_tokenizer, tmp_path / "source.parquet", n=30)
+    full = pq.read_table(source)
+    prompts = tmp_path / "prompts.parquet"
+    pq.write_table(full.select(["conversation_id", "prompt"]), prompts)
+    out = tmp_path / "merged" / "corpus.parquet"
+    for shard_index in range(3):
+        mask = pa.array([
+            shard_for_conversation(cid, 3) == shard_index
+            for cid in full["conversation_id"].to_pylist()
+        ])
+        shard = full.filter(mask)
+        shard_path = corpus_shard_path(out, shard_index, 3)
+        shard_path.parent.mkdir(parents=True, exist_ok=True)
+        pq.write_table(shard, shard_path)
+        write_corpus_sidecar(shard_path, cfg, tiny_tokenizer, shard.num_rows)
+
+    assert merge_corpus_shards(cfg, prompts, out, num_shards=3) == 30
+    merged = pq.read_table(out)
+    assert merged["conversation_id"].to_pylist() == full["conversation_id"].to_pylist()
+    assert seed_for_conversation(7, "conv-1") == seed_for_conversation(7, "conv-1")
+    assert seed_for_conversation(7, "conv-1") != seed_for_conversation(7, "conv-2")
 
 
 def test_recon_pairs_keyed_and_bucketed(cfg, tiny_tokenizer, tmp_path):

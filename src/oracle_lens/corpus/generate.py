@@ -9,6 +9,7 @@ vLLM is imported lazily: it is not a locked dependency (see pyproject.toml).
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 import pyarrow as pa
@@ -32,6 +33,28 @@ CORPUS_SCHEMA = pa.schema(
         ("finish_reason", pa.string()),
     ]
 )
+
+
+def shard_for_conversation(conversation_id: str, num_shards: int) -> int:
+    """Stable prompt partition independent of source ordering or box count."""
+    if num_shards < 1:
+        raise ValueError("num_shards must be >= 1")
+    digest = hashlib.sha256(f"generate-shard|{conversation_id}".encode()).digest()
+    return int.from_bytes(digest[:8], "big") % num_shards
+
+
+def seed_for_conversation(base_seed: int, conversation_id: str) -> int:
+    """Per-request seed so a prompt's sampling does not depend on its shard/order."""
+    digest = hashlib.sha256(f"generate-seed|{base_seed}|{conversation_id}".encode()).digest()
+    return int.from_bytes(digest[:8], "big") % (2**31 - 1)
+
+
+def corpus_shard_path(corpus_path: Path, shard_index: int, num_shards: int) -> Path:
+    if not 0 <= shard_index < num_shards:
+        raise ValueError(f"shard_index={shard_index} outside [0, {num_shards})")
+    return corpus_path.with_name(
+        f"{corpus_path.stem}.shard-{shard_index:05d}-of-{num_shards:05d}{corpus_path.suffix}"
+    )
 
 
 def corpus_sidecar_path(corpus_path: Path) -> Path:
@@ -64,7 +87,15 @@ def assert_fingerprint_matches(corpus_path: Path, cfg: Config, tokenizer) -> Non
         )
 
 
-def generate_corpus(cfg: Config, prompts_path: Path, out_path: Path, *, limit: int | None = None) -> int:
+def generate_corpus(
+    cfg: Config,
+    prompts_path: Path,
+    out_path: Path,
+    *,
+    limit: int | None = None,
+    shard_index: int | None = None,
+    num_shards: int | None = None,
+) -> int:
     from vllm import LLM, SamplingParams, TokensPrompt  # lazy: GPU-node only
 
     tokenizer = load_subject_tokenizer(cfg.model.name)
@@ -73,6 +104,18 @@ def generate_corpus(cfg: Config, prompts_path: Path, out_path: Path, *, limit: i
     texts = prompts["prompt"]
     if limit is not None:
         ids, texts = ids[:limit], texts[:limit]
+    if (shard_index is None) != (num_shards is None):
+        raise ValueError("shard_index and num_shards must be provided together")
+    if shard_index is not None and num_shards is not None:
+        if not 0 <= shard_index < num_shards:
+            raise ValueError(f"shard_index={shard_index} outside [0, {num_shards})")
+        selected = [
+            i for i, conversation_id in enumerate(ids)
+            if shard_for_conversation(conversation_id, num_shards) == shard_index
+        ]
+        ids = [ids[i] for i in selected]
+        texts = [texts[i] for i in selected]
+        out_path = corpus_shard_path(out_path, shard_index, num_shards)
 
     rendered: list[list[int]] = []
     keep: list[int] = []
@@ -83,7 +126,13 @@ def generate_corpus(cfg: Config, prompts_path: Path, out_path: Path, *, limit: i
             rendered.append(tok_ids)
 
     llm = LLM(model=cfg.model.name, dtype="bfloat16", seed=cfg.generation.seed)
-    params = SamplingParams(**sampling_params(cfg), seed=cfg.generation.seed)
+    params = [
+        SamplingParams(
+            **sampling_params(cfg),
+            seed=seed_for_conversation(cfg.generation.seed, ids[i]),
+        )
+        for i in keep
+    ]
     outputs = llm.generate(
         [TokensPrompt(prompt_token_ids=r) for r in rendered], params
     )
