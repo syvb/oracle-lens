@@ -1,6 +1,6 @@
 # Oracle Lens execution handoff
 
-Updated: 2026-07-16T21:55:00Z
+Updated: 2026-07-17T00:05:00Z
 
 Current operational state for an agent resuming the experiment in
 `/home/debian/oracle-lens`. Read `PLAN.md`, `README.md`, `EXECUTION.md`, and
@@ -8,8 +8,8 @@ Current operational state for an agent resuming the experiment in
 
 ## Stop point and user instructions
 
-- M0, M1, and M2 are complete. **M3 has not started and is blocked on a user
-  decision about the M2 gate** (see below).
+- M0, M1, and M2 are complete. **The M2 gate PASSED on the v2 run** (see
+  below). M3 has not started; it is the next step and nothing blocks it.
 - Layer 24 was treated as confirmed: the user reviewed the handoff that named
   it as the candidate and instructed "continue to the end of M2"; the four
   slice pages were also delivered to the user in-chat. If the user ever
@@ -22,43 +22,51 @@ Current operational state for an agent resuming the experiment in
   - Long-running jobs and uploads must have a real background watcher;
     re-arm expired watchers.
 
-## M2 result and the pending gate decision
+## M2 result (v2 — gate PASS)
 
-Training and eval completed 2026-07-16 on an H200 (contract 45116458,
-destroyed after verification). wandb: project `oracle-lens`, entity
-`octahedral-systems`, run `qwen3-8b-v1-recon-train` (x86r3wad = 20-step
-smoke; the full run is the later one). 378,623 pairs, 5,915 optim steps,
-effective batch 128, 2 epochs, loss 2.00 -> 1.507, eval_cosine plateaued at
-0.2311 (flat for final ~800 steps -> the "add data" remedy does NOT apply).
+M2 was run twice. The v1 run (2026-07-16, contract 45116458) hit a real
+training bug found by a four-agent review: the model was loaded in bf16 and
+AdamW ran on bf16 master weights, so at lr 1e-5 most backbone updates fell
+below the bf16 ulp and rounded to zero — only the value head trained.
+Fixed in commit 9953d0e (fp32 master weights + bf16 autocast, model.train()
+before the loop, injection dtype from embeddings, checkpoints cast back to
+bf16 on save; EXECUTION.md GPU floors updated: [train-6B] needs H200-class,
+[train-8B] on one H200 is tight). The v2 rerun (contract 45122991) used the
+identical config/seed/pairs.
 
-`reconstructor/eval.json` (public, also local):
+v2 results (`reconstructor/eval.json`, public; wandb qwen3-8b-v1-recon-train):
+- eval_cosine 0.3059 (v1: 0.2311). Held-out cosine by N:
+  0.137/0.206/0.266/0.307/0.328/0.340 for N=1/2/4/8/16/32.
+- Continuation-FVE by N: 0.030/0.058/0.087/0.109/0.121/0.127
+  (delimiter up to 0.153 at N=32); ~1.6-1.8x v1 in every bucket.
+- Gate: control_separation 0.1142 >= 0.10 PASS;
+  small_n_continuation_fve_min 0.0304 >= 0.02 PASS. Same thresholds as v1
+  (deliberately unchanged).
+- Loss 2.00 -> ~1.31; still mildly improving at end of schedule (schedule
+  leaves a little on the table; acceptable, gate passed).
 
-- Held-out cosine by N: 0.115 (N=1), 0.163 (2), 0.205 (4), 0.232 (8),
-  0.247 (16), 0.254 (32). Monotone IMPROVEMENT with N (PLAN.md expected
-  degradation; the failure mode it warns about — good only at N=1-2 — is
-  absent).
-- Continuation-FVE by N: 0.019 (N=1), 0.035 (2), 0.052 (4), 0.063 (8),
-  0.069 (16), 0.072 (32); delimiter > non-delimiter in every bucket.
-- Controls: true pairing 0.1145 vs shuffled 0.0006 (~200x) vs
-  predict-mean 0.0228 (~5x).
-- Numeric gate in config ([choice] thresholds): control_separation 0.0917
-  vs required 0.10 -> FAIL; min continuation-FVE at N<=8 is 0.0194 (N=1)
-  vs required 0.02 -> FAIL. Both misses are marginal and N=1-driven;
-  N=2/4/8 pass comfortably.
-- PLAN.md §5's qualitative gate (clear control separation; plateaued;
-  continuation-FVE meaningfully above zero at N<=8) is arguably satisfied.
-
-The user must decide: (a) accept as pass and proceed to M3, (b) accept but
-first relax/re-derive the [choice] thresholds in config and commit, or
-(c) regenerate more positions (bump positions.per_response, redo
-positions/split/collect/whiten + retrain — invalidates the aligned store and
-all downstream artifacts; needs the row-alignment teardown in EXECUTION.md §5).
+Review-panel notes to carry into M3/M4 and the final report:
+- PLAN.md §5 "expect monotone degradation with N" is an erratum — improvement
+  with N is the theoretically correct behavior (target is one fixed vector;
+  longer phrases only add conditioning information).
+- M3: report teacher FVE alongside a matched random-dictionary NN-OMP control
+  (same K/N mix/mask/stop protocol) to separate real signal from the
+  ~250k-candidate selection floor; verify the min-gain stop rule is measured
+  in absolute FVE, not fraction-of-residual.
+- The M2 gate's controls anchor to the N=1 bucket (hardest, and absent from
+  the M3 dictionary); operationalization kept as-is since v2 passes anyway.
+- v1 artifacts preserved: eval/metrics at diagnostics/m2_v1_bf16_bug/, v1 run
+  logs at diagnostics/m2/, and the v1 checkpoint at model-repo revision
+  bb2e60b808. diagnostics/m2_v2/ holds the v2 logs. Current model-repo HEAD
+  (c8a0c0970b) is v2; LFS sha256 d02146f32b79fe41... verified against the box.
 
 ## Infrastructure state
 
-- Vast.ai has zero active instances. `ops/vast_ledger.tsv` is current
-  (M2: 45116230 rejected for slow egress ~$0.20; 45116458 did the work,
-  ~1.37h @ $4.08 ~= $5.59). Cumulative ledger spend ~= $56.
+- All oracle-lens Vast instances are destroyed; the ledger is current
+  (M2 v1: 45116230 rejected ~$0.20 + 45116458 ~$5.59; M2 v2: 45122991
+  ~1.6h @ $4.08 ~= $6.55). Cumulative oracle-lens spend ~= $60.
+  NOTE: an unrelated instance 45125843 "suffix-eval-h200" exists on the
+  account — NOT ours, NOT in the ledger, do not touch it.
 - No uploader processes are running locally. Local disk: ~6.5 GB free —
   do not pull large artifacts here.
 - Dev-box HF uploads: `hf_xet` ballooned RAM and got OOM-killed twice;
@@ -84,15 +92,19 @@ The local 14 GB M1 bundle at `runs/qwen3-8b-v1/` is now redundant with HF
 (all hashes/sizes verified both sides) but is retained for now. Local copies
 of M2 `eval.json`/`metrics.jsonl` live at `runs/qwen3-8b-v1/reconstructor/`.
 
-## Resumption sequence (after the user's M2 gate decision)
+## Resumption sequence (M3 next)
 
-1. If proceeding to M3: rent an [infer] 48-80 GB box (EXECUTION.md §2),
-   pull `corpus/`, `activations/`, `whitening.pt` from the artifact dataset
-   and the reconstructor from `syvb/oracle-lens-qwen3-8b-recon` into
+1. Rent an [infer] 48-80 GB box (EXECUTION.md §2; dictionary encode +
+   NN-OMP are inference/matmul only — no fp32-optimizer constraint), pull
+   `corpus/`, `activations/`, `whitening.pt` from the artifact dataset and
+   the reconstructor from `syvb/oracle-lens-qwen3-8b-recon` into
    `/workspace/runs/qwen3-8b-v1/reconstructor/checkpoint/`, then run
    `dictionary` and `teacher`. Gate: `teacher/gate.json`
    `fve_mean_overall >= 0.15`.
-2. ops helpers: `ops/setup_m1.sh` (generic env build, works for any stage),
-   `ops/pull_m2.py` (pattern for artifact pulls), `ops/upload_*.py`.
-3. Boxes: speed-test egress first (>=150 MB/s), ledger immediately, watcher
-   on every detached job, verify uploads anonymously before destroy.
+2. ops helpers: `ops/setup_m1.sh` (generic env build), `ops/pull_m2.py`
+   (pattern for pulls), `ops/upload_*.py`. Dev-box uploads need
+   HF_HUB_DISABLE_XET=1.
+3. Boxes: speed-test egress first (>=150 MB/s; retest once on a cold link),
+   ledger immediately, watcher on every detached job, verify uploads
+   anonymously (name+size, LFS sha256 for same-size overwrites) before
+   destroy.

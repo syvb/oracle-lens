@@ -5,3 +5,4 @@ contract_id	label	gpu	usd_per_hr	bw_usd_per_tb_down_up	created_at	purpose	destro
 45049353	oracle-lens-m1-0716-0341	H100-SXM-80GB	2.237	0.011/0.011	2026-07-16T03:40:11Z	M1 activation collection, whitening, and layer-check	2026-07-16T08:32:10Z
 45116230	oracle-lens-m2-0716	H200-141GB	3.751	2.632/3.947	2026-07-16T20:25:47Z	M2 reconstructor train+eval; rejected live egress 33-50 MB/s	2026-07-16T20:28:46Z
 45116458	oracle-lens-m2b-0716	H200-141GB	4.080	0.0/0.0	2026-07-16T20:28:59Z	M2 reconstructor train+eval	2026-07-16T21:51:03Z
+45122991	oracle-lens-m2v2-0716	H200-141GB	4.080	0.0/0.0	2026-07-16T22:21:18Z	M2 redo with fp32 master-weight fix	2026-07-16T23:58:04Z
