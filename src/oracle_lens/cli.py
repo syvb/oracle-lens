@@ -43,6 +43,7 @@ def main() -> None:
             ("--num-shards", int, None),
         ],
         "merge-corpus": [("--num-shards", int, None)],
+        "repair-thinking": [("--max-attempts", int, 8)],
         "verify": [("--n-samples", int, 200)],
         "positions": [],
         "split": [],
@@ -92,6 +93,15 @@ def main() -> None:
             raise SystemExit("merge-corpus requires --num-shards")
         merge_corpus_shards(
             cfg, run.prompts, run.corpus, num_shards=args.num_shards
+        )
+    elif args.cmd == "repair-thinking":
+        from oracle_lens.corpus.generate import repair_thinking_leaks
+
+        repair_thinking_leaks(
+            cfg,
+            run.corpus,
+            run.root / "diagnostics" / "m0_thinking_leaks" / "repaired_rows.parquet",
+            max_attempts=args.max_attempts,
         )
     elif args.cmd == "verify":
         from oracle_lens.corpus.verify import verify_token_identity

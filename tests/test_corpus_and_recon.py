@@ -8,6 +8,8 @@ import torch
 from oracle_lens.corpus.generate import (
     CORPUS_SCHEMA,
     corpus_shard_path,
+    has_thinking_tag,
+    retry_seed_for_conversation,
     seed_for_conversation,
     shard_for_conversation,
     write_corpus_sidecar,
@@ -18,6 +20,25 @@ from oracle_lens.rendering import (
     render_first_turn,
     template_fingerprint,
 )
+
+
+class _TagTokenizer:
+    def encode(self, text, add_special_tokens=False):
+        assert not add_special_tokens
+        return [10] if text == "<think>" else [11]
+
+
+def test_thinking_tag_detection_and_retry_seeds():
+    tokenizer = _TagTokenizer()
+    assert has_thinking_tag([1, 10, 2], tokenizer)
+    assert has_thinking_tag([1, 11, 2], tokenizer)
+    assert not has_thinking_tag([1, 12, 2], tokenizer)
+    assert retry_seed_for_conversation(7, "abc", 1) == retry_seed_for_conversation(
+        7, "abc", 1
+    )
+    assert retry_seed_for_conversation(7, "abc", 1) != retry_seed_for_conversation(
+        7, "abc", 2
+    )
 
 
 def _write_tiny_corpus(cfg, tokenizer, path, n=8, corrupt_row=None):

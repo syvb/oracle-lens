@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
+from typing import Any
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -47,6 +48,25 @@ def seed_for_conversation(base_seed: int, conversation_id: str) -> int:
     """Per-request seed so a prompt's sampling does not depend on its shard/order."""
     digest = hashlib.sha256(f"generate-seed|{base_seed}|{conversation_id}".encode()).digest()
     return int.from_bytes(digest[:8], "big") % (2**31 - 1)
+
+
+def retry_seed_for_conversation(
+    base_seed: int, conversation_id: str, attempt: int
+) -> int:
+    """Deterministic rejection-resampling seed for rare thinking-tag leaks."""
+    digest = hashlib.sha256(
+        f"generate-seed|{base_seed}|{conversation_id}|nonthinking-retry-{attempt}".encode()
+    ).digest()
+    return int.from_bytes(digest[:8], "big") % (2**31 - 1)
+
+
+def has_thinking_tag(token_ids: list[int], tokenizer: Any) -> bool:
+    """Detect Qwen chat-template thinking delimiters by their token IDs."""
+    tag_ids = {
+        *tokenizer.encode("<think>", add_special_tokens=False),
+        *tokenizer.encode("</think>", add_special_tokens=False),
+    }
+    return bool(tag_ids.intersection(token_ids))
 
 
 def corpus_shard_path(corpus_path: Path, shard_index: int, num_shards: int) -> Path:
@@ -161,3 +181,110 @@ def generate_corpus(
     write_corpus_sidecar(out_path, cfg, tokenizer, len(keep))
     print(f"corpus: generated {len(keep)} transcripts -> {out_path}")
     return len(keep)
+
+
+def repair_thinking_leaks(
+    cfg: Config,
+    corpus_path: Path,
+    diagnostics_path: Path,
+    *,
+    max_attempts: int = 8,
+) -> int:
+    """Rejection-resample rare thinking-tag leaks in a non-thinking corpus.
+
+    Qwen's non-thinking template supplies an empty thinking block, but a tiny
+    fraction of sampled responses can nevertheless emit a new closing tag
+    after an internal reasoning trace. Preserve those original rows, then
+    deterministically resample only them until the response is tag-free.
+    """
+    from transformers import PreTrainedTokenizerBase
+    from vllm import LLM, SamplingParams, TokensPrompt
+
+    if cfg.model.enable_thinking:
+        raise RuntimeError("repair-thinking is only valid when enable_thinking=false")
+    if not hasattr(PreTrainedTokenizerBase, "all_special_tokens_extended"):
+        PreTrainedTokenizerBase.all_special_tokens_extended = property(  # type: ignore[attr-defined]
+            lambda self: self.all_special_tokens
+        )
+
+    tokenizer = load_subject_tokenizer(cfg.model.name)
+    table = pq.read_table(corpus_path)
+    rows = table.to_pydict()
+    original_bad = [
+        i
+        for i, response_ids in enumerate(rows["response_ids"])
+        if has_thinking_tag(response_ids, tokenizer)
+    ]
+    if not original_bad:
+        print("repair-thinking: no thinking-tag leaks found")
+        return 0
+
+    llm = LLM(model=cfg.model.name, dtype="bfloat16", seed=cfg.generation.seed)
+    remaining = list(original_bad)
+    retry_used: dict[int, int] = {}
+    repaired_response: dict[int, list[int]] = {}
+    repaired_finish: dict[int, str] = {}
+    for attempt in range(1, max_attempts + 1):
+        if not remaining:
+            break
+        params = [
+            SamplingParams(
+                **sampling_params(cfg),
+                seed=retry_seed_for_conversation(
+                    cfg.generation.seed, rows["conversation_id"][i], attempt
+                ),
+            )
+            for i in remaining
+        ]
+        outputs = llm.generate(
+            [TokensPrompt(prompt_token_ids=rows["prompt_ids"][i]) for i in remaining],
+            params,
+        )
+        next_remaining: list[int] = []
+        for i, output in zip(remaining, outputs, strict=True):
+            response_ids = list(output.outputs[0].token_ids)
+            if has_thinking_tag(response_ids, tokenizer):
+                next_remaining.append(i)
+            else:
+                retry_used[i] = attempt
+                repaired_response[i] = response_ids
+                repaired_finish[i] = str(output.outputs[0].finish_reason)
+        remaining = next_remaining
+    if remaining:
+        ids = [rows["conversation_id"][i] for i in remaining]
+        raise RuntimeError(
+            f"{len(remaining)} thinking-tag leaks remain after {max_attempts} "
+            f"attempts: {ids[:3]}"
+        )
+
+    diagnostic_rows = {
+        "conversation_id": [],
+        "original_response_ids": [],
+        "repaired_response_ids": [],
+        "retry_attempt": [],
+    }
+    for i in original_bad:
+        diagnostic_rows["conversation_id"].append(rows["conversation_id"][i])
+        diagnostic_rows["original_response_ids"].append(rows["response_ids"][i])
+        diagnostic_rows["repaired_response_ids"].append(repaired_response[i])
+        diagnostic_rows["retry_attempt"].append(retry_used[i])
+        rows["response_ids"][i] = repaired_response[i]
+        rows["finish_reason"][i] = repaired_finish[i]
+
+    diagnostics_path.parent.mkdir(parents=True, exist_ok=True)
+    pq.write_table(pa.Table.from_pydict(diagnostic_rows), diagnostics_path)
+    pq.write_table(pa.Table.from_pydict(rows, schema=CORPUS_SCHEMA), corpus_path)
+    meta_path = corpus_sidecar_path(corpus_path)
+    meta = yaml.safe_load(meta_path.read_text())
+    meta["thinking_leak_remediation"] = {
+        "kind": "deterministic_rejection_resampling",
+        "n_rows": len(original_bad),
+        "max_attempts": max(retry_used.values()),
+        "diagnostics": str(diagnostics_path.name),
+    }
+    meta_path.write_text(yaml.safe_dump(meta, sort_keys=True))
+    print(
+        f"repair-thinking: repaired {len(original_bad)} rows; originals and replacements "
+        f"-> {diagnostics_path}"
+    )
+    return len(original_bad)
