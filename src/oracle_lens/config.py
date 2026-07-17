@@ -86,7 +86,11 @@ class DictionaryCfg:
 @dataclass
 class TeacherCfg:
     max_atoms: int = 16  # [paper]
-    min_gain: float = 5e-3  # marginal-FVE stop [choice]
+    # [paper] fixed 16-atom budget, no early stop. A 5e-3 marginal-FVE stop
+    # [choice] was tried first but sits exactly at the ~250k-candidate
+    # selection-noise floor (~4.9e-3/atom), truncating teachers to ~4.5 atoms
+    # and the M3 gate to 0.129; see diagnostics/m3_min_gain_5e-3/.
+    min_gain: float = 0.0
     batch_size: int = 4096
     seed: int = 4  # keys the per-example half-dictionary masks
     gate_min_fve: float = 0.15  # M3 gate [choice]

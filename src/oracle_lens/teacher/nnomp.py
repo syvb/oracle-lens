@@ -27,7 +27,7 @@ from oracle_lens.eval.fve import fve_per_example
 from oracle_lens.nnls import nnls_batched, reconstruct
 
 MAX_ATOMS_DEFAULT = 16  # [paper]
-MIN_GAIN_DEFAULT = 5e-3  # [choice] marginal-FVE stop, PLAN.md §6.2
+MIN_GAIN_DEFAULT = 0.0  # [paper] fixed 16-atom budget (5e-3 stop sat at the selection-noise floor)
 
 _SM64_GAMMA = -7046029254386353131  # 0x9E3779B97F4A7C15 as int64
 _SM64_MUL1 = -4658895280553007687  # 0xBF58476D1CE4E5B9
