@@ -1,6 +1,6 @@
 # Oracle Lens execution handoff
 
-Updated: 2026-07-17T00:05:00Z
+Updated: 2026-07-17T02:10:00Z
 
 Current operational state for an agent resuming the experiment in
 `/home/debian/oracle-lens`. Read `PLAN.md`, `README.md`, `EXECUTION.md`, and
@@ -8,8 +8,29 @@ Current operational state for an agent resuming the experiment in
 
 ## Stop point and user instructions
 
-- M0, M1, and M2 are complete. **The M2 gate PASSED on the v2 run** (see
-  below). M3 has not started; it is the next step and nothing blocks it.
+- M0-M3 are complete; every gate has passed. **M4 (alpha-sweep ->
+  oracle-sft -> oracle-eval -> baselines -> gallery) is next; nothing blocks
+  it** except the M4 plan's own human checkpoint at the end (gallery review).
+
+## M3 result (gate PASS on the paper protocol)
+
+Two teacher runs on H100 contract 45130567 (destroyed; ~$1.62 total):
+- Run 1 (min_gain=5e-3 [choice]): fve_mean_overall 0.1294 -> gate FAIL.
+  Diagnosis: the stop sat exactly at the ~250k-candidate selection-noise
+  floor (~4.9e-3/atom), truncating teachers to mean 4.5/16 atoms (0% reached
+  16). Sample sensitivity (N=8): 0.135 -> 0.153 (min_gain 2e-3) -> 0.162
+  (16 atoms, no stop); random-Gaussian-dictionary floor at 16 atoms: 0.057
+  (real dictionary carries ~2.9x the floor). Preserved at
+  diagnostics/m3_min_gain_5e-3/ + diagnostics/m3/stop_rule_diag.py.
+- Run 2 (paper protocol: fixed 16-atom budget, min_gain=0, commit 9e58ca5):
+  **fve_mean_overall 0.1563 >= 0.15 PASS**; delimiter 0.1822, ordinary
+  0.1455; by_n 0.140/0.158/0.162/0.162/0.160 for N=2/4/8/16/32.
+- Dictionary: 795k phrases total (N2 96,852 / N4 166,125 / N8 181,457 /
+  N16 179,271 / N32 171,187), encoded with the v2 reconstructor.
+- Public: qwen3-8b-v1/dictionary/ (6.5 GB), qwen3-8b-v1/teacher/
+  (teacher.parquet 272 MB + gate.json), diagnostics/m3*. All verified
+  anonymously by name+size. Local copy of gate.json at
+  runs/qwen3-8b-v1/teacher/.
 - Layer 24 was treated as confirmed: the user reviewed the handoff that named
   it as the candidate and instructed "continue to the end of M2"; the four
   slice pages were also delivered to the user in-chat. If the user ever
